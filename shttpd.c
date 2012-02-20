@@ -1,14 +1,32 @@
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-
 #include <errno.h>
+#include "filereader.h"
+
+#define ISspace(x) isspace((int)(x))
+
+struct req{
+    char *firstline[1024];
+    char *headers[1024];
+    char *bodies[2048];
+};
 
 int get_line(int, char *, int);
 void bad_request(int);
 void cannot_execute(int);
+char *check_servmap(char *);
+struct req read_req(int, int);
+
+
+/* return the servletname from requested url*/
+char *check_servmap(char *req) {
+    // TODO have to implement
+    return "HelloServlet";
+}
 
 int main() {
     int sock0;
@@ -17,9 +35,17 @@ int main() {
     socklen_t len;
     int yes = 1;
 
-    char buf[2048];
-    char inbuf[2048];
+    struct req httpreq;
+    char inbuf[1024];
+    char inheadbuf[2048];
+    char headerbuf[1024];
+    char method[255];
+    char url[255];
+    char path[512];
 
+    char resheader[2048];
+    char rescontent[2024];
+    
     int sock_lis;
     int result;
 
@@ -50,14 +76,6 @@ int main() {
 	return 1;
     }
 
-    /* 応答メッセージ */
-    memset(buf, 0, sizeof(buf));
-    snprintf(buf, sizeof(buf), 
-	"HTTP/1.1 100 Continue\r\n"
-	"Content-Length: 7\r\n"
-	"Content-Type: text/html\r\n"
-	"\r\n"
-	"HELLO\r\n");
     /* TCPクライアントからの接続要求を受け付ける */
     while (1) {
     
@@ -69,21 +87,68 @@ int main() {
 	}
 
 	
-        /* 文字送信 */
-	memset(inbuf, 0, sizeof(inbuf));
-	recv(sock_lis, inbuf, sizeof(inbuf), 0); // TODO use get_line
+        /* 文字受信 */
+	
+	get_line(sock_lis, inbuf, sizeof(inbuf));
+	size_t i = 0, j = 0;
+	while (!ISspace(inbuf[j]) && (i < sizeof(method)) -1) {
+	    method[i] = inbuf[j];
+	    i++; j++;
+	}
+	method[i] = '\0';
+	// TODO have to judge the method
+	
+	// Get the indicated URL
+	i = 0;
+	while (ISspace(inbuf[j]) && (j < sizeof(inbuf)))
+	    j++;
+	while (!ISspace(inbuf[j]) && (i < sizeof(url) - 1) && (j < sizeof(inbuf))) {
+	    url[i] = inbuf[j];
+	    i++; j++;
+	}
+	url[i] = '\0';
+
+	char *servletName;
+	servletName = check_servmap(url);
+	if (servletName == NULL) {
+	    // TODO implement
+	    return -1;
+	}
+
+
+	// recv(sock_lis, inbuf, sizeof(inbuf), 0); // TODO use get_line
 	printf("%s", inbuf);
 
-	int ok;
-	ok = send(sock_lis, buf, (int)strlen(buf), MSG_DONTWAIT);
-	printf("sent bytes = %d¥r¥n", ok);
+
+	if (strcasecmp(servletName, "HelloServlet")) {
+	    
+	    OpenAndRead("hello.txt","r", rescontent);
+	    if (*rescontent == '\0') {
+		printf("no file.\n");
+		return -1;
+	    }
+	}
+
+	
+	/* 応答メッセージ */
+	sprintf(resheader,
+	    "HTTP/1.1 100 Continue\r\n"
+	    "Content-Length: 100\r\n"
+	    "Content-Type: text/html\r\n"
+	    "\r\n");
+
+        /* 文字送信 */
+	int hlen, blen;
+	hlen = send(sock_lis, headerbuf, (int)strlen(headerbuf), MSG_DONTWAIT);
+	blen = send(sock_lis, rescontent, (int)strlen(rescontent), MSG_DONTWAIT);
+	printf("sent bytes = %d\r\n", hlen + blen);
 
 	if (strstr(inbuf, "Connection: close") != NULL) {
 	    close(sock_lis);
-	    printf("connection is closed.¥r¥n");
+	    printf("connection is closed.\r\n");
 	    break;
 	} else {
-	    printf("continue the session¥r¥n");
+	    printf("continue the session\r\n");
 	}
     }
     close(sock_lis);
@@ -95,32 +160,68 @@ int main() {
 int get_line(int sock, char *buf, int size) {
 
     int i = 0;
-    char c = '¥0';
+    char c = '\0';
     int n;
 
-    while ((i < size -1) && (c != '¥n')) {
+    while ((i < size -1) && (c != '\0')) {
 	n = recv(sock, &c, 1, 0);
 
 	if (n > 0) {
-	    if (c == '¥r') {
+	    if (c == '\r') {
 		n = recv(sock, &c, 1, MSG_PEEK);
-		if ((n > 0) && (c == '¥n')) {
+		if ((n > 0) && (c == '\n')) {
 		    recv(sock, &c, 1, 0);
 		} else {
-		    c = '¥n';
+		    c = '\n';
 	        }
 	    } else {
 		buf[i] = c;
 		i++;
 	    }
 	} else {
-	    c = '¥n';
+	    c = '\n';
 	}
     }
-    buf[i] = '¥0';
+    buf[i] = '\0';
     return(i);
 
 }
+
+struct req read_req(int sock, int size) {
+
+    struct req httpreq;
+    char buf[1024];
+    int firstl = 0;
+    
+    firstl = get_line(sock, buf, size);
+    if (firstl == 0) return httpreq;
+    httpreq.firstline[0] = buf;
+
+    int headers = 0;
+    char headbuf[1024];
+    int h;
+    while (1) {
+	
+	char headbuf[1024];
+	get_line(sock, headbuf, size);
+	if (strcmp(headbuf, "\r") || strcmp(headbuf, "\r\n")) break;
+	httpreq.headers[h] = headbuf;
+	h++;
+    }
+
+    int b;
+    char bodybuf[1024];
+    while (1) {
+	get_line(sock, bodybuf, size);
+	if (strcmp(bodybuf, "\0")) break;
+	httpreq.bodies[b] = bodybuf;
+	b++;
+    }
+
+    return httpreq;
+
+}
+
 
 void bad_request(int client) {
     char buf[1024];
